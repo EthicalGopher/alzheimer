@@ -1,0 +1,22 @@
+# Ignore everything TensorFlow repo-related
+tensorflow/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.dll
+*.exe
+*.out
+*.log
+
+# Ignore Git & IDE
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# Ignore test data if you want to mount instead
+*.jpg
+*.png
+*.tflite
