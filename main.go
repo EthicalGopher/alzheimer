@@ -1,103 +1,130 @@
 package main
 
 import (
-	"flag"
+	"encoding/json"
 	"fmt"
-	"image"
-	_ "image/png"
 	"log"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 
-	"github.com/mattn/go-tflite"
-	"github.com/mattn/go-tflite/delegates/edgetpu"
-	"github.com/nfnt/resize"
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/google/uuid"
 )
 
-func top(a []float32) int {
-	t := 0
-	m := float32(0)
-	for i, e := range a {
-		if i == 0 || e > m {
-			m = e
-			t = i
-		}
-	}
-	return t
+const (
+	uploadDir = "./uploads"
+	modelPath = "alzheimers_model.onnx"
+)
+
+// displayOrder defines the consistent order for presenting classification results in the UI.
+var displayOrder = []string{
+	"No Impairment",
+	"Very Mild Impairment",
+	"Mild Impairment",
+	"Moderate Impairment",
+}
+
+// ClassificationResult holds the structured data from the Python script's JSON output.
+type ClassificationResult struct {
+	PredictedClass   string            `json:"predicted_class"`
+	Confidence       string            `json:"confidence"`
+	AllProbabilities map[string]string `json:"all_probabilities"`
 }
 
 func main() {
-	var verbosity int
-	var filename string
-	flag.StringVar(&filename, "f", "test/1(10).png", "input filename")
-	flag.IntVar(&verbosity, "verbosity", 0, "Edge TPU Verbosity")
-	flag.Parse()
+	if err := os.MkdirAll(uploadDir, os.ModePerm); err != nil {
+		log.Fatalf("Could not create upload directory: %v", err)
+	}
 
-	f, err := os.Open(filename)
+	app := fiber.New()
+	app.Use(logger.New())
+
+	// Serve static files from the "public" directory.
+	app.Static("/", "./public")
+
+	// The classification endpoint now calls the script with proper flags.
+	app.Post("/classify", handleImageClassification)
+
+	log.Println("Server is starting on http://localhost:3000")
+	log.Fatal(app.Listen(":3000"))
+}
+
+func handleImageClassification(c *fiber.Ctx) error {
+	file, err := c.FormFile("image")
 	if err != nil {
-		log.Fatal(err)
+		return c.Status(fiber.StatusBadRequest).SendString(
+			`<p style="color: orange;">Please select an image file to upload.</p>`,
+		)
 	}
-	defer f.Close()
 
-	img, _, err := image.Decode(f)
+	ext := filepath.Ext(file.Filename)
+	uniqueFilename := uuid.New().String() + ext
+	savePath := filepath.Join(uploadDir, uniqueFilename)
+
+	if err := c.SaveFile(file, savePath); err != nil {
+		return c.Status(fiber.StatusInternalServerError).SendString(
+			`<p style="color: red;">Error: Could not save file on server.</p>`,
+		)
+	}
+
+	defer func() {
+		if err := os.Remove(savePath); err != nil {
+			log.Printf("Warning: failed to remove temp file %s: %v", savePath, err)
+		}
+	}()
+
+	log.Printf("Executing classifier for image: %s", savePath)
+	cmd := exec.Command("python", "python/classifier.py",
+		"--model", modelPath,
+		"--image", savePath,
+		"--json", // Request clean JSON output
+	)
+
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Python script execution failed: %v\nOutput from script: %s", err, string(output))
+		return c.Status(fiber.StatusInternalServerError).SendString(
+			`<p style="color: red;">Error during classification. Check server logs for details.</p>`,
+		)
 	}
 
-	model := tflite.NewModelFromFile("model/alzheimers_model.tflite")
-
-	if model == nil {
-		log.Println("cannot load model")
-		return
-	}
-	defer model.Delete()
-
-	devices, err := edgetpu.DeviceList()
-	if err != nil {
-		log.Printf("Could not get EdgeTPU devices: %v", err)
-		return
-	}
-	if len(devices) == 0 {
-		log.Println("No edge TPU devices found")
-		return
+	var result ClassificationResult
+	if err := json.Unmarshal(output, &result); err != nil {
+		log.Printf("Failed to parse JSON from python script: %v\nRaw output: %s", err, string(output))
+		return c.Status(fiber.StatusInternalServerError).SendString(
+			`<p style="color: orange;">Error: Could not understand the result from the classifier.</p>`,
+		)
 	}
 
-	edgetpuVersion, err := edgetpu.Version()
-	if err != nil {
-		log.Printf("Could not get EdgeTPU version: %v", err)
-		return
-	}
-	fmt.Printf("EdgeTPU Version: %s\n", edgetpuVersion)
-	edgetpu.Verbosity(verbosity)
-	options := tflite.NewInterpreterOptions()
-	options.SetNumThread(4)
-	options.AddDelegate(edgetpu.New(devices[0]))
-	defer options.Delete()
-
-	interpreter := tflite.NewInterpreter(model, options)
-	defer interpreter.Delete()
-
-	status := interpreter.AllocateTensors()
-	if status != tflite.OK {
-		log.Println("allocate failed")
-		return
-	}
-
-	input := interpreter.GetInputTensor(0)
-	resized := resize.Resize(28, 28, img, resize.NearestNeighbor)
-	in := input.Float32s()
-	for y := 0; y < 28; y++ {
-		for x := 0; x < 28; x++ {
-			r, g, b, _ := resized.At(x, y).RGBA()
-			in[y*28+x] = (float32(b) + float32(g) + float32(r)) / 3.0 / 65535.0
+	// Build the list of all probabilities for display
+	var probsListBuilder strings.Builder
+	// Use the package-level displayOrder slice for consistent presentation
+	for _, key := range displayOrder {
+		if val, ok := result.AllProbabilities[key]; ok {
+			// Highlight the predicted class in the list
+			if key == result.PredictedClass {
+				probsListBuilder.WriteString(fmt.Sprintf(`<li><strong>%s: %s</strong></li>`, key, val))
+			} else {
+				probsListBuilder.WriteString(fmt.Sprintf(`<li>%s: %s</li>`, key, val))
+			}
 		}
 	}
-	status = interpreter.Invoke()
-	if status != tflite.OK {
-		log.Println("invoke failed")
-		return
-	}
 
-	output := interpreter.GetOutputTensor(0)
-	out := output.Float32s()
-	fmt.Println(top(out))
+	// Create the final, decorated HTML snippet
+	htmlResponse := fmt.Sprintf(`
+        <h4>Classification Result</h4>
+        <p><strong>Prediction:</strong> <mark>%s</mark></p>
+        <p><strong>Confidence:</strong> %s</p>
+        <details open>
+            <summary>View All Probabilities</summary>
+            <ul>
+                %s
+            </ul>
+        </details>
+    `, result.PredictedClass, result.Confidence, probsListBuilder.String())
+
+	return c.SendString(htmlResponse)
 }

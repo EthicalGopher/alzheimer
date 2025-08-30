@@ -19,4 +19,4 @@ __pycache__/
 # Ignore test data if you want to mount instead
 *.jpg
 *.png
-*.tflite
+

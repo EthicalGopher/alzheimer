@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NeuroScan AI | Alzheimer's Disease Detection</title>
+
+    <!-- Pico.css for simple, clean styling -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css"/>
+    <!-- HTMX library -->
+    <script src="https://unpkg.com/htmx.org@latest"></script>
+
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        :root {
+            --primary: #4a6cf7;
+            --primary-hover: #5d7bf8;
+            --success: #0abb92;
+            --warning: #ffbc35;
+            --danger: #f3616d;
+            --card-bg: rgba(255, 255, 255, 0.05);
+        }
+
+        body {
+            padding-top: 1rem;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            padding: 0 1rem;
+        }
+
+        .header-container {
+            text-align: center;
+            margin-bottom: 2rem;
+            padding: 1.5rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .logo {
+            font-size: 2.5rem;
+            color: var(--primary);
+            margin-bottom: 1rem;
+        }
+
+        h1 {
+            color: #f8fafc;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+        }
+
+        .subtitle {
+            color: #94a3b8;
+            font-size: 1.1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .content-wrapper {
+            display: flex;
+            flex-direction: row;
+            gap: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        .upload-section {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .results-section {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 2rem;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            height: 100%;
+        }
+
+        .upload-area {
+            border: 2px dashed #4a6cf7;
+            border-radius: 8px;
+            padding: 2.5rem 1.5rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-bottom: 1.5rem;
+            background: rgba(74, 108, 247, 0.05);
+        }
+
+        .upload-area:hover {
+            background: rgba(74, 108, 247, 0.1);
+            border-color: var(--primary-hover);
+        }
+
+        .upload-icon {
+            font-size: 3rem;
+            color: var(--primary);
+            margin-bottom: 1rem;
+        }
+
+        .upload-text {
+            color: #cbd5e1;
+            margin-bottom: 1rem;
+        }
+
+        .file-input {
+            display: none;
+        }
+
+        .selected-file {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(255, 255, 255, 0.08);
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            margin-top: 1rem;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .file-info {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .file-icon {
+            color: var(--primary);
+        }
+
+        .remove-btn {
+            background: none;
+            border: none;
+            color: #94a3b8;
+            cursor: pointer;
+            padding: 0.25rem;
+            border-radius: 4px;
+        }
+
+        .remove-btn:hover {
+            color: var(--danger);
+            background: rgba(243, 97, 109, 0.1);
+        }
+
+        .submit-btn {
+            width: 100%;
+            padding: 1rem;
+            font-weight: 600;
+            font-size: 1.1rem;
+            background: var(--primary);
+            border: none;
+            transition: all 0.3s ease;
+        }
+
+        .submit-btn:hover {
+            background: var(--primary-hover);
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(74, 108, 247, 0.3);
+        }
+
+        .htmx-indicator {
+            width: 100%;
+            padding: 1rem;
+            background: var(--primary);
+            border: none;
+        }
+
+        #result {
+            padding: 2rem;
+            border-radius: 12px;
+            min-height: 150px;
+            background: var(--card-bg);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+            transition: all 0.3s ease;
+            height: 500px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .result-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+            color: #f8fafc;
+        }
+
+        .result-icon {
+            font-size: 1.5rem;
+        }
+
+        .confidence-meter {
+            height: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            margin: 1.5rem 0;
+            overflow: hidden;
+        }
+
+        .confidence-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 1s ease;
+        }
+
+        .disclaimer {
+            font-size: 0.85rem;
+            color: #94a3b8;
+            text-align: center;
+            margin-top: 2rem;
+            padding: 1rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .loading-dots {
+            display: inline-block;
+            position: relative;
+            width: 80px;
+            height: 20px;
+            text-align: center;
+        }
+
+        .loading-dots div {
+            position: absolute;
+            top: 0;
+            width: 13px;
+            height: 13px;
+            border-radius: 50%;
+            background: var(--primary);
+            animation-timing-function: cubic-bezier(0, 1, 1, 0);
+        }
+
+        .loading-dots div:nth-child(1) {
+            left: 8px;
+            animation: loading-dots1 0.6s infinite;
+        }
+
+        .loading-dots div:nth-child(2) {
+            left: 8px;
+            animation: loading-dots2 0.6s infinite;
+        }
+
+        .loading-dots div:nth-child(3) {
+            left: 32px;
+            animation: loading-dots2 0.6s infinite;
+        }
+
+        .loading-dots div:nth-child(4) {
+            left: 56px;
+            animation: loading-dots3 0.6s infinite;
+        }
+
+        @keyframes loading-dots1 {
+            0% { transform: scale(0); }
+            100% { transform: scale(1); }
+        }
+
+        @keyframes loading-dots3 {
+            0% { transform: scale(1); }
+            100% { transform: scale(0); }
+        }
+
+        @keyframes loading-dots2 {
+            0% { transform: translate(0, 0); }
+            100% { transform: translate(24px, 0); }
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .result-mild {
+            border-left: 4px solid var(--warning);
+        }
+
+        .result-moderate {
+            border-left: 4px solid var(--danger);
+        }
+
+        .result-none {
+            border-left: 4px solid var(--success);
+        }
+
+        footer {
+            text-align: center;
+            margin-top: 3rem;
+            padding: 2rem 0;
+            color: #64748b;
+            font-size: 0.9rem;
+        }
+
+        /* Responsive design */
+        @media (max-width: 992px) {
+            .content-wrapper {
+                flex-direction: column;
+            }
+
+            .upload-section, .results-section {
+                width: 100%;
+            }
+
+            #result {
+                min-height: 200px;
+            }
+        }
+
+        @media (max-width: 576px) {
+            .header-container {
+                padding: 1rem;
+            }
+
+            .card {
+                padding: 1.5rem;
+            }
+
+            .upload-area {
+                padding: 1.5rem 1rem;
+            }
+
+            #result {
+                padding: 1.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+<main class="container" style="padding-top: 10rem">
+
+
+    <div class="content-wrapper">
+        <div class="upload-section">
+            <div class="card">
+                <h2><i class="fas fa-upload"></i> Upload MRI Scan</h2>
+                <p>Please select a brain MRI scan for analysis. Our AI will evaluate the image for signs of Alzheimer's disease.</p>
+
+                <form
+                        hx-post="/classify"
+                        hx-encoding="multipart/form-data"
+                        hx-target="#result"
+                        hx-swap="innerHTML"
+                >
+                    <div class="upload-area" id="dropZone">
+                        <div class="upload-icon">
+                            <i class="fas fa-cloud-upload-alt"></i>
+                        </div>
+                        <p class="upload-text">Drag & drop your MRI image here or click to browse</p>
+                        <button type="button" class="secondary" onclick="document.getElementById('image').click()">
+                            <i class="fas fa-folder-open"></i> Select File
+                        </button>
+                        <input type="file" id="image" name="image" class="file-input" accept="image/*" required />
+                    </div>
+
+                    <div id="fileInfo" style="display: none;">
+                        <div class="selected-file">
+                            <div class="file-info">
+                                <i class="fas fa-file-image file-icon"></i>
+                                <span id="fileName"></span>
+                            </div>
+                            <button type="button" class="remove-btn" onclick="removeFile()">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="submit-btn">
+                        <i class="fas fa-search"></i> Analyze MRI Scan
+                    </button>
+                    <button class="secondary htmx-indicator" aria-busy="true" style="width: 100%;">
+                        <div class="loading-dots">
+                            <div></div><div></div><div></div><div></div>
+                        </div>
+                        Analyzing scan...
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div class="results-section">
+            <div class="card">
+                <h2><i class="fas fa-microscope"></i> Analysis Results</h2>
+                <p>Results of the MRI analysis will appear here after processing.</p>
+
+                <!-- Result area -->
+                <div id="result">
+
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+</main>
+
+<footer style="height: 100px;">
+</footer>
+
+<script>
+    // File input handling
+    const fileInput = document.getElementById('image');
+    const dropZone = document.getElementById('dropZone');
+    const fileInfo = document.getElementById('fileInfo');
+    const fileName = document.getElementById('fileName');
+
+    fileInput.addEventListener('change', function(e) {
+        if (this.files && this.files[0]) {
+            const file = this.files[0];
+            fileName.textContent = file.name;
+            fileInfo.style.display = 'block';
+        }
+    });
+
+    // Drag and drop functionality
+    dropZone.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        this.style.background = 'rgba(74, 108, 247, 0.15)';
+    });
+
+    dropZone.addEventListener('dragleave', function(e) {
+        e.preventDefault();
+        this.style.background = 'rgba(74, 108, 247, 0.05)';
+    });
+
+    dropZone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        this.style.background = 'rgba(74, 108, 247, 0.05)';
+
+        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+            fileInput.files = e.dataTransfer.files;
+            const file = e.dataTransfer.files[0];
+            fileName.textContent = file.name;
+            fileInfo.style.display = 'block';
+        }
+    });
+
+    function removeFile() {
+        fileInput.value = '';
+        fileInfo.style.display = 'none';
+    }
+
+    // Enhance HTMX request/response cycle
+    document.body.addEventListener('htmx:beforeRequest', function(evt) {
+        const resultDiv = document.getElementById('result');
+        resultDiv.innerHTML = `
+            <div style="text-align: center; padding: 1.5rem;">
+                <div class="loading-dots" style="margin: 0 auto;">
+                    <div></div><div></div><div></div><div></div>
+                </div>
+                <p style="margin-top: 1.5rem; color: #94a3b8;">Processing MRI scan. This may take a moment...</p>
+            </div>
+        `;
+    });
+</script>
+</body>
+</html>

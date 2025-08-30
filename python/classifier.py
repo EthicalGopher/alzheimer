@@ -1,207 +1,142 @@
-import tensorflow as tf
-import numpy as np
-from PIL import Image
 import sys
 import os
+import json
+import numpy as np
+import onnxruntime as ort
+from PIL import Image
+import argparse
 
-# Class labels matching your model
-classes = ['MI', 'MOD', 'NI', 'VMI']
+# --- Helper Function ---
+def softmax(x):
+    """Compute softmax values for a set of scores in x."""
+    e_x = np.exp(x - np.max(x))
+    return e_x / e_x.sum(axis=0)
 
-def load_and_preprocess_image(image_path):
-    """Load and preprocess image for prediction"""
-    try:
-        # Load image
-        img = Image.open(image_path)
-        print(f"Original image size: {img.size}")
+class ONNXImageDetector:
+    def __init__(self, model_path, class_names, quiet=False):
+        """
+        Initialize ONNX Image Detector
 
-        # Convert to RGB if needed (handles grayscale or RGBA)
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
+        Args:
+            model_path: Path to the .onnx model file
+            class_names: List of class names
+            quiet: If True, suppresses startup messages.
+        """
+        self.model_path = model_path
+        self.class_names = class_names
+        self.ort_session = ort.InferenceSession(model_path)
+        self.input_name = self.ort_session.get_inputs()[0].name
+        self.input_shape = self.ort_session.get_inputs()[0].shape
 
-        # Resize to 224x224 (matching your training)
-        img = img.resize((224, 224))
+        if not quiet:
+            print(f"Model loaded: {model_path}")
+            print(f"Input shape: {self.input_shape}")
+            print(f"Input name: {self.input_name}")
 
-        # Convert to numpy array and normalize to [0,1]
-        img_array = np.array(img, dtype=np.float32) / 255.0
+    def preprocess_image(self, image_path, target_size=(128, 128)):
+        """Preprocess image for model input"""
+        try:
+            image = Image.open(image_path).convert('RGB')
+            image = image.resize(target_size)
+            img_array = np.array(image, dtype=np.float32) / 255.0
 
-        # Add batch dimension [1, 224, 224, 3]
-        img_array = np.expand_dims(img_array, axis=0)
+            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+            img_array = (img_array - mean) / std
 
-        return img_array
+            img_array = img_array.transpose(2, 0, 1)
+            img_array = np.expand_dims(img_array, axis=0).astype(np.float32)
 
-    except Exception as e:
-        print(f"Error preprocessing image: {e}")
-        return None
+            return img_array
 
-def predict_single_image(interpreter, image_path):
-    """Predict class for a single image using TensorFlow Lite"""
-    # Preprocess image
-    img_array = load_and_preprocess_image(image_path)
-    if img_array is None:
-        return None, None, None
+        except Exception as e:
+            print(f"Error preprocessing image {image_path}: {e}", file=sys.stderr)
+            return None
 
-    # Get input and output tensors info
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
+    def predict_single_image(self, image_path):
+        """Predict a single image and return structured data."""
+        processed_img = self.preprocess_image(image_path)
 
-    print(f"Input shape: {input_details[0]['shape']}")
-    print(f"Output shape: {output_details[0]['shape']}")
+        if processed_img is None:
+            return None
 
-    # Set input tensor
-    interpreter.set_tensor(input_details[0]['index'], img_array)
+        try:
+            # Run inference and get raw logits
+            outputs = self.ort_session.run(None, {self.input_name: processed_img})
+            logits = outputs[0][0]
 
-    # Run inference
-    interpreter.invoke()
+            # Convert logits to probabilities using softmax
+            probabilities = softmax(logits)
 
-    # Get output
-    predictions = interpreter.get_tensor(output_details[0]['index'])[0]
+            # Get predicted class and confidence
+            pred_class_idx = np.argmax(probabilities)
+            confidence = np.max(probabilities)
+            pred_class_name = self.class_names[pred_class_idx]
 
-    # Get predicted class and confidence
-    predicted_class_idx = np.argmax(predictions)
-    predicted_class = classes[predicted_class_idx]
-    confidence = predictions[predicted_class_idx]
+            # Create a dictionary of all class probabilities
+            all_probs_dict = {self.class_names[i]: probabilities[i] for i in range(len(self.class_names))}
 
-    return predicted_class, confidence, predictions
+            result = {
+                'predicted_class': pred_class_name,
+                'confidence': float(confidence),
+                'all_probabilities': all_probs_dict
+            }
 
-def predict_multiple_images(interpreter, image_paths):
-    """Predict classes for multiple images"""
-    results = []
+            return result
 
-    for img_path in image_paths:
-        print(f"\nProcessing: {os.path.basename(img_path)}")
-        predicted_class, confidence, predictions = predict_single_image(interpreter, img_path)
-
-        if predicted_class is not None:
-            results.append((img_path, predicted_class, confidence, predictions))
-        else:
-            print(f"Failed to process: {img_path}")
-
-    return results
+        except Exception as e:
+            print(f"Error during inference for {image_path}: {e}", file=sys.stderr)
+            return None
 
 def main():
-    # Check for TensorFlow Lite model
-    model_path = 'alzheimers_model.tflite'
+    """Main function to handle command line arguments"""
+    parser = argparse.ArgumentParser(description='ONNX Image Detection System')
+    parser.add_argument('--model', '-m', required=True, help='Path to ONNX model file')
+    parser.add_argument('--image', '-i', required=True, help='Path to single image file')
+    parser.add_argument('--json', action='store_true', help='Output result as a clean JSON object.')
 
-    if not os.path.exists(model_path):
-        print(f"TensorFlow Lite model '{model_path}' not found!")
-        print("Make sure you have 'alzheimers_model.tflite' in the current directory.")
-        return
+    args = parser.parse_args()
 
-    # Load TensorFlow Lite model
-    print(f"Loading TensorFlow Lite model from {model_path}...")
+    class_names = [
+        'Mild Impairment',
+        'Moderate Impairment',
+        'No Impairment',
+        'Very Mild Impairment',
+    ]
+
     try:
-        interpreter = tf.lite.Interpreter(model_path=model_path)
-        interpreter.allocate_tensors()
-        print("TensorFlow Lite model loaded successfully!")
+        # Initialize in quiet mode if JSON output is requested
+        detector = ONNXImageDetector(args.model, class_names, quiet=args.json)
     except Exception as e:
-        print(f"Error loading model: {e}")
-        return
+        print(f"Error loading model: {e}", file=sys.stderr)
+        sys.exit(1)
 
-    if len(sys.argv) < 2:
-        print("Usage: python classifier.py <image_path> [image_path2] [image_path3] ...")
-        print("Example: python classifier.py test/test.jpg")
-        print("Example: python classifier.py test/*.jpg")
-        return
+    if not os.path.exists(args.image):
+        print(f"Image file not found: {args.image}", file=sys.stderr)
+        sys.exit(1)
 
-    image_paths = sys.argv[1:]
+    result = detector.predict_single_image(args.image)
 
-    # Single image prediction
-    if len(image_paths) == 1:
-        image_path = image_paths[0]
-        print(f"\nAnalyzing image: {image_path}")
+    if result is None:
+        print("Failed to get a prediction.", file=sys.stderr)
+        sys.exit(1)
 
-        if not os.path.exists(image_path):
-            print(f"Image file '{image_path}' not found!")
-            return
-
-        predicted_class, confidence, all_predictions = predict_single_image(interpreter, image_path)
-
-        if predicted_class is None:
-            print("Failed to analyze image!")
-            return
-
-        print(f"\n{'='*50}")
-        print(f"PREDICTION RESULTS")
-        print(f"{'='*50}")
-        print(f"Image: {os.path.basename(image_path)}")
-        print(f"Predicted Class: {predicted_class}")
-        print(f"Confidence: {confidence*100:.2f}%")
-
-        print(f"\nAll class probabilities:")
-        for i, class_name in enumerate(classes):
-            print(f"  {class_name}: {all_predictions[i]*100:.2f}%")
-
-    # Multiple image prediction
+    if args.json:
+        # Format for JSON output
+        json_result = {
+            "predicted_class": result['predicted_class'],
+            "confidence": f"{result['confidence'] * 100:.2f}%",
+            "all_probabilities": {k: f"{v * 100:.2f}%" for k, v in result['all_probabilities'].items()}
+        }
+        print(json.dumps(json_result, indent=2))
     else:
-        print(f"\nAnalyzing {len(image_paths)} images...")
-
-        # Filter existing files
-        existing_files = [path for path in image_paths if os.path.exists(path)]
-        if not existing_files:
-            print("No valid image files found!")
-            return
-
-        results = predict_multiple_images(interpreter, existing_files)
-
-        print(f"\n{'='*80}")
-        print(f"BATCH PREDICTION RESULTS")
-        print(f"{'='*80}")
-        print(f"{'Image':<25} {'Predicted':<8} {'Confidence':<12} {'All Probabilities'}")
-        print(f"{'-'*80}")
-
-        for img_path, predicted_class, confidence, all_predictions in results:
-            img_name = os.path.basename(img_path)
-            probs_str = " | ".join([f"{classes[i]}:{all_predictions[i]*100:.1f}%" for i in range(4)])
-            print(f"{img_name:<25} {predicted_class:<8} {confidence*100:>8.2f}%    {probs_str}")
-
-        # Summary
-        if results:
-            class_counts = {class_name: 0 for class_name in classes}
-            for _, predicted_class, _, _ in results:
-                class_counts[predicted_class] += 1
-
-            print(f"\nSUMMARY:")
-            print(f"Total images processed: {len(results)}")
-            for class_name, count in class_counts.items():
-                percentage = (count / len(results)) * 100
-                print(f"{class_name}: {count} images ({percentage:.1f}%)")
-
-def predict_directory(directory_path):
-    """Helper function to predict all images in a directory"""
-    model_path = 'alzheimers_model.tflite'
-
-    if not os.path.exists(model_path):
-        print(f"Model file '{model_path}' not found!")
-        return
-
-    interpreter = tf.lite.Interpreter(model_path=model_path)
-    interpreter.allocate_tensors()
-
-    # Get all image files
-    supported_formats = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff')
-    image_files = []
-
-    for file in os.listdir(directory_path):
-        if file.lower().endswith(supported_formats):
-            image_files.append(os.path.join(directory_path, file))
-
-    if not image_files:
-        print(f"No supported image files found in {directory_path}")
-        return
-
-    print(f"Found {len(image_files)} images in {directory_path}")
-    results = predict_multiple_images(interpreter, image_files)
-
-    # Display results
-    for img_path, predicted_class, confidence, all_predictions in results:
-        print(f"{os.path.basename(img_path)}: {predicted_class} ({confidence*100:.1f}%)")
+        # Human-readable output
+        print(f"\nImage: {os.path.basename(args.image)}")
+        print(f"Predicted Class: {result['predicted_class']}")
+        print(f"Confidence: {result['confidence']:.4f}")
+        print("\nAll Class Probabilities:")
+        for class_name, prob in result['all_probabilities'].items():
+            print(f"  {class_name}: {prob:.4f}")
 
 if __name__ == "__main__":
     main()
-
-# Example usage:
-# python classifier.py test/test.jpg
-# python classifier.py test/image1.jpg test/image2.jpg
-#
-# To predict all images in a directory, you can modify main() or use:
-# predict_directory("test/")
